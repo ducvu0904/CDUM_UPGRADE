@@ -32,6 +32,7 @@ from experiment.main import (
     build_model,
     merge_config_into_args,
     prepare_loaders_for_model,
+    update_summary_csv,
 )
 
 logging.basicConfig(
@@ -48,13 +49,15 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--config", type=str, default="experiment/config.yaml",
-                        help="Path to YAML config file.")
-    parser.add_argument("--model", type=str, default=None, choices=["cdum", "cpm", "cpm_dynamic_fusion"],
-                        help="Model to evaluate ('cdum', 'cpm', or 'cpm_dynamic_fusion'). Defaults to config model.name.")
+                        help="Path to YAML config or the training run's saved config.json.")
+    parser.add_argument("--model", type=str, default=None, choices=["cdum", "cpm", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"],
+                        help="Model to evaluate. Defaults to the explicitly supplied config's model.")
     parser.add_argument("--router_hidden_dim", type=int, default=None,
-                        help="Router hidden dimension for cpm_dynamic_fusion (default: from config or model default).")
+                        help="Router hidden dimension for dynamic-fusion variants (default: from config or model default).")
     parser.add_argument("--valor_hidden_dim", type=int, default=None,
-                        help="VALOR hidden dimension for cpm_dynamic_fusion (default: from config or model default).")
+                        help="VALOR hidden dimension for dynamic-fusion variants (default: from config or model default).")
+    parser.add_argument("--prognostic_hidden_dim", type=int, default=None,
+                        help="Three-branch prognostic hidden dimension (default: from config or expert_hidden_dim).")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Explicit path to a .pth checkpoint file. If omitted, resolves from results_dir.")
     parser.add_argument("--seed", type=int, default=1,
@@ -74,6 +77,8 @@ def parse_args():
                         help="Device to use ('cuda' or 'cpu'). Auto-detect by default.")
     parser.add_argument("--save_csv", type=str, default="results/evaluation_summary.csv",
                         help="Path to save evaluation summary CSV.")
+    parser.add_argument("--update_summary", action="store_true", default=False,
+                        help="Update results/summary.csv with aggregated mean ± std test metrics across evaluated seeds.")
     parser.add_argument("--skip_missing", action="store_true", default=True,
                         help="Skip missing checkpoints instead of aborting execution.")
     return parser.parse_args()
@@ -143,7 +148,7 @@ def evaluate_single_checkpoint(
     trainer.load(ckpt_path)
 
     eval_kwargs: Dict[str, Any] = {"k": args.eval_k}
-    if model_name.lower() in ("cdum", "cpm", "cpm_dynamic_fusion"):
+    if model_name.lower() in ("cdum", "cpm", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"):
         eval_kwargs["print_diagnostics"] = True
 
     try:
@@ -187,6 +192,8 @@ def main():
         args.router_hidden_dim = cli_args.router_hidden_dim
     if cli_args.valor_hidden_dim is not None:
         args.valor_hidden_dim = cli_args.valor_hidden_dim
+    if cli_args.prognostic_hidden_dim is not None:
+        args.prognostic_hidden_dim = cli_args.prognostic_hidden_dim
 
     raw_model = (getattr(args, "model", None) or "cdum").lower()
     model_name = "cdum" if raw_model in ("cdum", "cpm") else raw_model
@@ -216,6 +223,7 @@ def main():
         batch_size=args.batch_size,
         label_col=getattr(args, "label_col", "visit"),
         num_workers=getattr(args, "num_workers", 2),
+        max_samples=getattr(args, "max_samples", None),
     )
 
     logger.info(f"Preparing EquidistantBucketer for {model_name.upper()}...")
@@ -296,6 +304,51 @@ def main():
         df = pd.DataFrame(csv_rows)
         df.to_csv(cli_args.save_csv, index=False)
         logger.info(f"Evaluation results successfully saved to: {cli_args.save_csv}")
+
+    # Update results/summary.csv with aggregated mean ± std across evaluated seeds
+    if cli_args.update_summary and model_results:
+        summary_csv_path = os.path.join(args.results_dir, "summary.csv")
+        auuc_vals = [m["auuc"] for m in model_results.values() if "auuc" in m and not np.isnan(m["auuc"])]
+        qini_vals = [m["qini"] for m in model_results.values() if "qini" in m and not np.isnan(m["qini"])]
+        lift_vals = [m.get(f"lift@{k_pct}%", m.get("lift@30%", 0.0)) for m in model_results.values() if not np.isnan(m.get(f"lift@{k_pct}%", m.get("lift@30%", 0.0)))]
+        loss_vals = [m["loss"] for m in model_results.values() if "loss" in m and not np.isnan(m["loss"])]
+
+        summary_dict = {
+            "mean": {
+                "test_auuc": float(np.mean(auuc_vals)) if auuc_vals else 0.0,
+                "test_qini": float(np.mean(qini_vals)) if qini_vals else 0.0,
+                "test_lift@30": float(np.mean(lift_vals)) if lift_vals else 0.0,
+                "test_loss": float(np.mean(loss_vals)) if loss_vals else 0.0,
+            },
+            "std": {
+                "test_auuc": float(np.std(auuc_vals, ddof=1)) if len(auuc_vals) > 1 else 0.0,
+                "test_qini": float(np.std(qini_vals, ddof=1)) if len(qini_vals) > 1 else 0.0,
+                "test_lift@30": float(np.std(lift_vals, ddof=1)) if len(lift_vals) > 1 else 0.0,
+                "test_loss": float(np.std(loss_vals, ddof=1)) if len(loss_vals) > 1 else 0.0,
+            },
+        }
+
+        # Preserve existing val metrics or best_epoch from summary.csv if present
+        if os.path.exists(summary_csv_path):
+            try:
+                df_curr = pd.read_csv(summary_csv_path)
+                if "model" in df_curr.columns and model_name.lower() in df_curr["model"].values:
+                    row = df_curr[df_curr["model"] == model_name.lower()].iloc[0]
+                    for col in ["val_loss_mean", "val_loss_std", "val_auuc_mean", "val_auuc_std", "best_epoch"]:
+                        if col in row and not pd.isna(row[col]):
+                            if col == "val_loss_mean":
+                                summary_dict["mean"]["val_loss"] = float(row[col])
+                            elif col == "val_loss_std":
+                                summary_dict["std"]["val_loss"] = float(row[col])
+                            elif col == "val_auuc_mean":
+                                summary_dict["mean"]["val_auuc"] = float(row[col])
+                            elif col == "val_auuc_std":
+                                summary_dict["std"]["val_auuc"] = float(row[col])
+            except Exception as e:
+                logger.warning(f"Could not read existing summary.csv to preserve val metrics: {e}")
+
+        update_summary_csv(summary_csv_path, model_name, summary_dict)
+        logger.info(f"Summary CSV successfully updated at: {summary_csv_path}")
 
 
 if __name__ == "__main__":

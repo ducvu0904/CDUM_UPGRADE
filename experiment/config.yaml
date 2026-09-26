@@ -7,10 +7,11 @@ data:
   num_workers: 4
 
 model:
-  name: "cpm_dynamic_fusion" # "cdum", "cpm", or "cpm_dynamic_fusion"
+  name: "cpm_dynamic_fusion" # Also: "cdum", "cpm", "cpm_three_branch_dynamic_fusion"
   input_dim: 12
-  router_hidden_dim: 64 # Router hidden dimension for cpm_dynamic_fusion
-  valor_hidden_dim: 256 # VALOR MLP hidden dimension for cpm_dynamic_fusion
+  router_hidden_dim: 32 # Router hidden dimension for cpm_dynamic_fusion
+  valor_hidden_dim: 128 # VALOR MLP hidden dimension for cpm_dynamic_fusion
+  prognostic_hidden_dim: null # Three-branch only; null -> cdum.expert_hidden_dim
 
 training:
   epochs: 30
@@ -33,7 +34,7 @@ cdum:
   treatment_dim: 128
   seq_len: 10
   num_experts: 3
-  expert_hidden_dim: 64
+  expert_hidden_dim: 256
   expert_dim: 64
   tower_hidden_dim: 32
   refine_hidden_dim: 64
@@ -41,10 +42,10 @@ cdum:
   activation: "relu"
   dropout_rate: 0.0
   batch_norm: false
-  l2_reg: 0.000001
+  l2_reg: 0.000000
   huber_delta: 1.0
-  router_hidden_dim: 64
-  valor_hidden_dim: 256
+  router_hidden_dim: 32
+  valor_hidden_dim: 128
 
 output:
   checkpoint_dir: "checkpoints"

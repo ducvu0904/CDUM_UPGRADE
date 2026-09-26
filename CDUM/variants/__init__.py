@@ -5,9 +5,17 @@ from .cpm_dynamic_fusion import (
     DynamicFusionRouter,
     ValorTreatmentGatedBranch,
 )
+from .cpm_three_branch_dynamic_fusion import (
+    CPMThreeBranchDynamicFusion,
+    PrognosticBranch,
+    ThreeBranchDynamicFusionRouter,
+)
 
 __all__ = [
     "CPMDynamicFusion",
     "DynamicFusionRouter",
     "ValorTreatmentGatedBranch",
+    "CPMThreeBranchDynamicFusion",
+    "PrognosticBranch",
+    "ThreeBranchDynamicFusionRouter",
 ]

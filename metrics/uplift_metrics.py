@@ -233,7 +233,6 @@ def qini_auc_score1(y_true, uplift, treatment, negative_effect=True):
     perfect = auc(xp, yp) - base
     actual  = auc(xa, ya) - base
 
-    print(f'  [Qini debug]  perfect={perfect:.6f}  baseline={base:.6f}  actual={actual:.6f}')
     return actual / perfect
 
 

@@ -312,16 +312,28 @@ class CPMTrainer:
         total_loss = 0.0
         n_batches = 0
         uplift_scores, treatments, outcomes = [], [], []
+        is_dynamic_fusion = hasattr(self.model, "valor_branch") and hasattr(self.model, "router")
         y0_all, y1_all = [], []
         g0_all, g1_all = [], []
         ind0_all, ind1_all = [], []
+        pi0_all, pi1_all = [], []
+        m0_all, m1_all = [], []
 
         for x_ids, treatment, outcome in test_loader:
             x_ids_dev = x_ids.to(self.device)
             treatment_dev = treatment.to(self.device)
             outcome_dev = outcome.to(self.device)
 
-            outputs = self._forward(x_ids_dev, treatment_dev)
+            if print_diagnostics and is_dynamic_fusion:
+                outputs = self.model(x_ids_dev, treatment_dev, return_diagnostics=True)
+                diag = outputs.get("diagnostics", {})
+                if 0 in diag and 1 in diag:
+                    pi0_all.append(diag[0]["pi"].detach().cpu())
+                    pi1_all.append(diag[1]["pi"].detach().cpu())
+                    m0_all.append(diag[0]["m_t"].detach().cpu())
+                    m1_all.append(diag[1]["m_t"].detach().cpu())
+            else:
+                outputs = self._forward(x_ids_dev, treatment_dev)
             y_factual = outputs["y_factual"]
             target = outcome_dev.to(dtype=y_factual.dtype).reshape_as(y_factual)
             total_loss += self.criterion(y_factual, target).item()
@@ -347,54 +359,7 @@ class CPMTrainer:
         if print_diagnostics and y0_all and y1_all:
             y0 = torch.cat(y0_all, dim=0)
             y1 = torch.cat(y1_all, dim=0)
-
-            logger.info(
-                "Diagnostics | y0: mean=%.6f, std=%.6f, min=%.6f, max=%.6f",
-                y0.mean().item(),
-                y0.std().item(),
-                y0.min().item(),
-                y0.max().item(),
-            )
-            logger.info(
-                "Diagnostics | y1: mean=%.6f, std=%.6f, min=%.6f, max=%.6f",
-                y1.mean().item(),
-                y1.std().item(),
-                y1.min().item(),
-                y1.max().item(),
-            )
-
             uplift = y1 - y0
-            logger.info(
-                "Diagnostics | uplift: mean=%.6f, std=%.6f, min=%.6f, max=%.6f",
-                uplift.mean().item(),
-                uplift.std().item(),
-                uplift.min().item(),
-                uplift.max().item(),
-            )
-
-            if g0_all and g1_all:
-                g0 = torch.cat(g0_all, dim=0)
-                g1 = torch.cat(g1_all, dim=0)
-                logger.info("Diagnostics | control gate mean: %s", g0.mean(dim=0).tolist())
-                logger.info("Diagnostics | treat gate mean: %s", g1.mean(dim=0).tolist())
-
-            if ind0_all and ind1_all:
-                ind0 = torch.cat(ind0_all, dim=0)
-                ind1 = torch.cat(ind1_all, dim=0)
-                logger.info(
-                    "Diagnostics | indicator0: mean=%.6f, std=%.6f, min=%.6f, max=%.6f",
-                    ind0.mean().item(),
-                    ind0.std().item(),
-                    ind0.min().item(),
-                    ind0.max().item(),
-                )
-                logger.info(
-                    "Diagnostics | indicator1: mean=%.6f, std=%.6f, min=%.6f, max=%.6f",
-                    ind1.mean().item(),
-                    ind1.std().item(),
-                    ind1.min().item(),
-                    ind1.max().item(),
-                )
 
             t0 = torch.tensor([0], dtype=torch.long, device=self.device)
             t1 = torch.tensor([1], dtype=torch.long, device=self.device)
@@ -402,13 +367,75 @@ class CPMTrainer:
             t_emb1 = self.model.encoder.encode_treatment(t1)
             e_gui0, e_ind0 = self.model.treatment_refine(t_emb0)
             e_gui1, e_ind1 = self.model.treatment_refine(t_emb1)
-            g0_vec = self.model.control_gate(e_gui0)
-            g1_vec = self.model.treatment_gate(e_gui1)
+            g0_vec = self.model.control_gate(e_gui0).squeeze()
+            g1_vec = self.model.treatment_gate(e_gui1).squeeze()
 
-            logger.info("Diagnostics | treatment emb diff: %.6f", (t_emb0 - t_emb1).abs().mean().item())
-            logger.info("Diagnostics | guidance diff:      %.6f", (e_gui0 - e_gui1).abs().mean().item())
-            logger.info("Diagnostics | indicator diff:     %.6f", (e_ind0 - e_ind1).abs().mean().item())
-            logger.info("Diagnostics | gate diff:          %.6f", (g0_vec - g1_vec).abs().mean().item())
+            g0_mean = torch.cat(g0_all, dim=0).mean(dim=0).tolist() if g0_all else g0_vec.tolist()
+            g1_mean = torch.cat(g1_all, dim=0).mean(dim=0).tolist() if g1_all else g1_vec.tolist()
+            g0_str = "[" + ", ".join(f"{x:.3f}" for x in g0_mean) + "]"
+            g1_str = "[" + ", ".join(f"{x:.3f}" for x in g1_mean) + "]"
+            g_diff = (g0_vec - g1_vec).abs().mean().item()
+
+            t_diff = (t_emb0 - t_emb1).abs().mean().item()
+            gui_diff = (e_gui0 - e_gui1).abs().mean().item()
+            ind_diff = (e_ind0 - e_ind1).abs().mean().item()
+            ind0_m = e_ind0.mean().item()
+            ind1_m = e_ind1.mean().item()
+
+            model_tag = "CPM_DYNAMIC_FUSION" if is_dynamic_fusion else "CPM"
+            if hasattr(self.model, "prognostic_branch"):
+                model_tag = "CPM_THREE_BRANCH_DYNAMIC_FUSION"
+            bar_len = max(10, 68 - len(model_tag) - 17)
+            logger.info("── Diagnostics [%s] %s", model_tag, "─" * bar_len)
+            logger.info(
+                "  Outcomes : y0=%.4f±%.4f | y1=%.4f±%.4f | Uplift=%.4f±%.4f",
+                y0.mean().item(), y0.std().item(),
+                y1.mean().item(), y1.std().item(),
+                uplift.mean().item(), uplift.std().item(),
+            )
+            logger.info("  Gates    : g0=%s | g1=%s | Δgate=%.4f", g0_str, g1_str, g_diff)
+            logger.info(
+                "  Latents  : Δe_t=%.4f | Δgui=%.4f | Δind=%.4f (ind0=%.3f, ind1=%.3f)",
+                t_diff, gui_diff, ind_diff, ind0_m, ind1_m,
+            )
+
+            if is_dynamic_fusion and hasattr(self.model, "valor_branch"):
+                m0_vec = torch.sigmoid(self.model.valor_branch.linear_t(t_emb0))
+                m1_vec = torch.sigmoid(self.model.valor_branch.linear_t(t_emb1))
+                m_diff = (m0_vec - m1_vec).abs()
+                logger.info(
+                    "  VALOR    : m0=%.4f | m1=%.4f | Δmask=%.4f (max=%.4f)",
+                    m0_vec.mean().item(),
+                    m1_vec.mean().item(),
+                    m_diff.mean().item(),
+                    m_diff.max().item(),
+                )
+
+                prior_str = ""
+                if hasattr(self.model.router, "fc2") and self.model.router.fc2.bias is not None:
+                    prior = torch.softmax(self.model.router.fc2.bias, dim=-1)
+                    prior_str = "Prior=[" + ", ".join(f"{v:.3f}" for v in prior.tolist()) + "] | "
+
+                if pi0_all and pi1_all:
+                    pi0 = torch.cat(pi0_all, dim=0)
+                    pi1 = torch.cat(pi1_all, dim=0)
+                    entropy0 = -(pi0 * torch.log(pi0.clamp(min=1e-12))).sum(dim=-1).mean().item()
+                    entropy1 = -(pi1 * torch.log(pi1.clamp(min=1e-12))).sum(dim=-1).mean().item()
+                    if hasattr(self.model, "prognostic_branch"):
+                        ctrl = ", ".join(f"{v:.4f}" for v in pi0.mean(dim=0).tolist())
+                        treat = ", ".join(f"{v:.4f}" for v in pi1.mean(dim=0).tolist())
+                        logger.info("  Router [P,C,I] : %s", prior_str.rstrip(" |"))
+                        logger.info(
+                            "  Weights  : Ctrl=[%s] (H=%.3f) | Treat=[%s] (H=%.3f)",
+                            ctrl, entropy0, treat, entropy1,
+                        )
+                    else:
+                        logger.info(
+                            "  Router   : %sCtrl π_C=%.4f (H=%.3f) | Treat π_C=%.4f (H=%.3f)",
+                            prior_str, pi0[:, 0].mean().item(), entropy0,
+                            pi1[:, 0].mean().item(), entropy1,
+                        )
+            logger.info("─" * 68)
 
         results: Dict[str, float] = {"loss": total_loss / max(n_batches, 1)}
         if not HAS_METRICS or not uplift_scores:

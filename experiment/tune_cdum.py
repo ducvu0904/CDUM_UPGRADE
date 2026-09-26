@@ -27,11 +27,13 @@ import argparse
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+import itertools
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import optuna
+from optuna.trial import TrialState
 
 # Ensure project root is in sys.path
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -150,6 +152,78 @@ class OptunaTrialRecorder:
                 df_new.to_csv(self.csv_path, mode="a", header=False, index=False)
         else:
             df_new.to_csv(self.csv_path, index=False)
+
+
+class DeduplicatedTPESampler(optuna.samplers.TPESampler):
+    """TPESampler with duplicate rejection across discrete categorical search spaces.
+
+    Guarantees every suggested trial explores a unique hyperparameter configuration,
+    preventing TPE mode-collapse where the best configuration from startup trials
+    is sampled repeatedly.
+    """
+
+    def __init__(self, *args, max_retries: int = 500, **kwargs):
+        kwargs["multivariate"] = True
+        kwargs.setdefault("warn_independent_sampling", False)
+        super().__init__(*args, **kwargs)
+        self.max_retries = max_retries
+
+    def sample_relative(
+        self,
+        study: optuna.Study,
+        trial: optuna.trial.FrozenTrial,
+        search_space: Dict[str, optuna.distributions.BaseDistribution],
+    ) -> Dict[str, Any]:
+        if not search_space:
+            return {}
+
+        existing_params = [
+            t.params
+            for t in study.trials
+            if t.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING)
+            and t.number != trial.number
+        ]
+
+        trials = study._get_trials(
+            deepcopy=False,
+            states=(TrialState.COMPLETE, TrialState.PRUNED),
+            use_cache=True,
+        )
+
+        # For startup trials, sample randomly but guarantee uniqueness
+        if len(trials) < self._n_startup_trials:
+            all_combos = [
+                dict(zip(search_space.keys(), v))
+                for v in itertools.product(
+                    *[search_space[k].choices for k in search_space]
+                )
+            ]
+            unused = [c for c in all_combos if c not in existing_params]
+            if unused:
+                idx = int(self._rng.rng.randint(0, len(unused)))
+                return unused[idx]
+            return {}
+
+        # After startup, sample using multivariate TPE with duplicate rejection
+        for _ in range(self.max_retries):
+            params = super().sample_relative(study, trial, search_space)
+            if not params:
+                return params
+            if params not in existing_params:
+                return params
+
+        # If TPE failed to find an unseen combination after max_retries, sample from unused space
+        all_combos = [
+            dict(zip(search_space.keys(), v))
+            for v in itertools.product(
+                *[search_space[k].choices for k in search_space]
+            )
+        ]
+        unused = [c for c in all_combos if c not in existing_params]
+        if unused:
+            idx = int(self._rng.rng.randint(0, len(unused)))
+            return unused[idx]
+        return params
 
 
 def run_tuning(args: argparse.Namespace) -> optuna.Study:
@@ -384,7 +458,7 @@ def run_tuning(args: argparse.Namespace) -> optuna.Study:
         return final_mean
 
     # ── 5. Create In-Memory Optuna Study ──────────────────────────────────────
-    sampler = optuna.samplers.TPESampler(seed=args.sampler_seed)
+    sampler = DeduplicatedTPESampler(seed=args.sampler_seed)
     pruner = optuna.pruners.MedianPruner(
         n_startup_trials=args.startup_trials,
         n_warmup_steps=1,
@@ -449,7 +523,7 @@ def export_study_results(study: optuna.Study, args: argparse.Namespace) -> None:
         "model_type": "cpm_dynamic_fusion",
         "monitor_metric": args.monitor,
         "study_name": study.study_name,
-        "sampler": "TPESampler",
+        "sampler": "DeduplicatedTPESampler(multivariate=True, duplicate_rejection=True)",
         "sampler_seed": args.sampler_seed,
         "pruner": f"MedianPruner(n_startup_trials={args.startup_trials}, n_warmup_steps=1, interval_steps=1)",
         "number_of_requested_trials": args.n_trials,

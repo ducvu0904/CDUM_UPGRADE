@@ -1,0 +1,64 @@
+2026-09-26 14:05:53  INFO      
+======================================================================
+2026-09-26 14:05:53  INFO       MODEL: CPM_DYNAMIC_FUSION | SEEDS: [3]
+2026-09-26 14:05:53  INFO       Directory: results/cpm_dynamic_fusion
+2026-09-26 14:05:53  INFO       Run Log:   results/cpm_dynamic_fusion/run.log
+2026-09-26 14:05:53  INFO      ======================================================================
+2026-09-26 14:05:53  INFO      Hyperparameters saved to: results/cpm_dynamic_fusion/config.json
+2026-09-26 14:05:53  INFO      
+>>> Running CPM_DYNAMIC_FUSION — Seed 3 (1/1) ...
+2026-09-26 14:05:53  INFO      ------------------------------------------------------------
+2026-09-26 14:05:53  INFO       Model: CPM_DYNAMIC_FUSION | Seed: 3 | Checkpoints: results/cpm_dynamic_fusion/seed_3
+2026-09-26 14:05:53  INFO      ------------------------------------------------------------
+2026-09-26 14:05:53  INFO      Starting CPM training | Device: cuda | Epochs: 30 | Monitor: val_auuc
+2026-09-26 14:06:48  INFO      Epoch [01/30]  Train Loss: 0.01601 | Val Loss: 0.01513 | Val AUUC: 0.03341 | Best (val_auuc): 0.03341 | LR: 0.001000 | EarlyStop: 0/5
+2026-09-26 14:07:42  INFO      Epoch [02/30]  Train Loss: 0.01507 | Val Loss: 0.01505 | Val AUUC: 0.03173 | Best (val_auuc): 0.03341 | LR: 0.001000 | EarlyStop: 1/5
+2026-09-26 14:08:35  INFO      Epoch [03/30]  Train Loss: 0.01504 | Val Loss: 0.01503 | Val AUUC: 0.03360 | Best (val_auuc): 0.03360 | LR: 0.001000 | EarlyStop: 0/5
+2026-09-26 14:09:28  INFO      Epoch [04/30]  Train Loss: 0.01503 | Val Loss: 0.01503 | Val AUUC: 0.03165 | Best (val_auuc): 0.03360 | LR: 0.001000 | EarlyStop: 1/5
+2026-09-26 14:10:22  INFO      Epoch [05/30]  Train Loss: 0.01502 | Val Loss: 0.01506 | Val AUUC: 0.03407 | Best (val_auuc): 0.03407 | LR: 0.001000 | EarlyStop: 0/5
+2026-09-26 14:11:16  INFO      Epoch [06/30]  Train Loss: 0.01502 | Val Loss: 0.01501 | Val AUUC: 0.03362 | Best (val_auuc): 0.03407 | LR: 0.001000 | EarlyStop: 1/5
+2026-09-26 14:12:10  INFO      Epoch [07/30]  Train Loss: 0.01501 | Val Loss: 0.01500 | Val AUUC: 0.03330 | Best (val_auuc): 0.03407 | LR: 0.001000 | EarlyStop: 2/5
+2026-09-26 14:13:04  INFO      Epoch [08/30]  Train Loss: 0.01501 | Val Loss: 0.01501 | Val AUUC: 0.03399 | Best (val_auuc): 0.03407 | LR: 0.001000 | EarlyStop: 3/5
+2026-09-26 14:13:57  INFO      Epoch [09/30]  Train Loss: 0.01501 | Val Loss: 0.01501 | Val AUUC: 0.03342 | Best (val_auuc): 0.03407 | LR: 0.001000 | EarlyStop: 4/5
+2026-09-26 14:14:51  INFO      Epoch [10/30]  Train Loss: 0.01501 | Val Loss: 0.01501 | Val AUUC: 0.03550 | Best (val_auuc): 0.03550 | LR: 0.000600 | EarlyStop: 0/5
+2026-09-26 14:15:44  INFO      Epoch [11/30]  Train Loss: 0.01500 | Val Loss: 0.01499 | Val AUUC: 0.03332 | Best (val_auuc): 0.03550 | LR: 0.000600 | EarlyStop: 1/5
+2026-09-26 14:16:38  INFO      Epoch [12/30]  Train Loss: 0.01499 | Val Loss: 0.01500 | Val AUUC: 0.03395 | Best (val_auuc): 0.03550 | LR: 0.000600 | EarlyStop: 2/5
+2026-09-26 14:17:32  INFO      Epoch [13/30]  Train Loss: 0.01499 | Val Loss: 0.01500 | Val AUUC: 0.03373 | Best (val_auuc): 0.03550 | LR: 0.000600 | EarlyStop: 3/5
+2026-09-26 14:18:28  INFO      Epoch [14/30]  Train Loss: 0.01499 | Val Loss: 0.01500 | Val AUUC: 0.03459 | Best (val_auuc): 0.03550 | LR: 0.000360 | EarlyStop: 4/5
+2026-09-26 14:19:21  INFO      Epoch [15/30]  Train Loss: 0.01498 | Val Loss: 0.01499 | Val AUUC: 0.03379 | Best (val_auuc): 0.03550 | LR: 0.000360 | EarlyStop: 5/5
+2026-09-26 14:19:21  INFO      Early stopping triggered at epoch 15
+2026-09-26 14:19:21  INFO      Evaluating CPM_DYNAMIC_FUSION (Seed 3) [Primary: val_auuc] on test set...
+2026-09-26 14:19:26  INFO      Diagnostics | y0: mean=0.041191, std=0.108557, min=0.001200, max=0.810318
+2026-09-26 14:19:26  INFO      Diagnostics | y1: mean=0.047517, std=0.121478, min=0.001063, max=0.875606
+2026-09-26 14:19:26  INFO      Diagnostics | uplift: mean=0.006326, std=0.022996, min=-0.013461, max=0.309519
+2026-09-26 14:19:26  INFO      Diagnostics | control gate mean: [0.02762768790125847, 0.9447813034057617, 0.027590854093432426]
+2026-09-26 14:19:26  INFO      Diagnostics | treat gate mean: [0.014762628823518753, 0.9704412817955017, 0.014796210452914238]
+2026-09-26 14:19:26  INFO      Diagnostics | indicator0: mean=0.515625, std=0.010657, min=0.500000, max=0.535268
+2026-09-26 14:19:26  INFO      Diagnostics | indicator1: mean=0.515625, std=0.010657, min=0.500000, max=0.535268
+2026-09-26 14:19:26  INFO      Diagnostics | treatment emb diff: 0.000000
+2026-09-26 14:19:26  INFO      Diagnostics | guidance diff:      0.000000
+2026-09-26 14:19:26  INFO      Diagnostics | indicator diff:     0.000000
+2026-09-26 14:19:26  INFO      Diagnostics | gate diff:          0.017106
+2026-09-26 14:19:31  INFO      Diagnostics | y0: mean=0.040332, std=0.108056, min=0.000888, max=0.807438
+2026-09-26 14:19:31  INFO      Diagnostics | y1: mean=0.049057, std=0.123149, min=0.001080, max=0.904562
+2026-09-26 14:19:31  INFO      Diagnostics | uplift: mean=0.008725, std=0.024165, min=-0.011332, max=0.286729
+2026-09-26 14:19:31  INFO      Diagnostics | control gate mean: [0.0261530838906765, 0.9477110505104065, 0.026135912165045738]
+2026-09-26 14:19:31  INFO      Diagnostics | treat gate mean: [0.01701287552714348, 0.9659478068351746, 0.01703917793929577]
+2026-09-26 14:19:31  INFO      Diagnostics | indicator0: mean=0.521661, std=0.014215, min=0.500000, max=0.546390
+2026-09-26 14:19:31  INFO      Diagnostics | indicator1: mean=0.521661, std=0.014215, min=0.500000, max=0.546390
+2026-09-26 14:19:31  INFO      Diagnostics | treatment emb diff: 0.000000
+2026-09-26 14:19:31  INFO      Diagnostics | guidance diff:      0.000000
+2026-09-26 14:19:31  INFO      Diagnostics | indicator diff:     0.000000
+2026-09-26 14:19:31  INFO      Diagnostics | gate diff:          0.012158
+2026-09-26 14:19:32  INFO      Seed 3 Done | Best Epoch: 10 | Val Loss: 0.01501 | Val AUUC: 0.03550 | Test AUUC: 0.03627 | Test Qini: 0.09216 | Test Lift@30: 0.02993 | Time: 807.3s
+2026-09-26 14:19:32  INFO        [Checkpoint Comparison] Best AUUC (Ep 10): Test AUUC=0.03627, Qini=0.09216 | Best Loss (Ep 15): Test AUUC=0.03608, Qini=0.09162
+2026-09-26 14:19:32  INFO      Metrics saved to: results/cpm_dynamic_fusion/metrics.json
+2026-09-26 14:19:32  INFO      Summary CSV updated at: results/summary.csv
+2026-09-26 14:19:32  INFO      
+2026-09-26 14:19:32  INFO      --- SUMMARY FOR CPM_DYNAMIC_FUSION (1 Seeds) ---
+2026-09-26 14:19:32  INFO        best_epoch     : 10.00000 ± 0.00000
+2026-09-26 14:19:32  INFO        val_loss       : 0.01501 ± 0.00000
+2026-09-26 14:19:32  INFO        val_auuc       : 0.03550 ± 0.00000
+2026-09-26 14:19:32  INFO        test_auuc      : 0.03627 ± 0.00000
+2026-09-26 14:19:32  INFO        test_qini      : 0.09216 ± 0.00000
+2026-09-26 14:19:32  INFO        test_lift@30   : 0.02993 ± 0.00000

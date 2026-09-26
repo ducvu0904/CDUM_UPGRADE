@@ -1,0 +1,6 @@
+model,seed,checkpoint_type,checkpoint_path,loss,auuc,qini,lift@30%
+cpm_dynamic_fusion,1,best_auuc,results/cpm_dynamic_fusion/seed_1/best_auuc_checkpoint.pth,0.015008288351219822,0.03758070966885725,0.09550794000220694,0.030905909836292267
+cpm_dynamic_fusion,2,best_auuc,results/cpm_dynamic_fusion/seed_2/best_auuc_checkpoint.pth,0.014994042124925997,0.0383274308740496,0.09733735329463103,0.030936643481254578
+cpm_dynamic_fusion,3,best_auuc,results/cpm_dynamic_fusion/seed_3/best_auuc_checkpoint.pth,0.015016059132499827,0.03626786495392185,0.09215616524569062,0.029933422803878784
+cpm_dynamic_fusion,4,best_auuc,results/cpm_dynamic_fusion/seed_4/best_auuc_checkpoint.pth,0.015042601618915796,0.03731605809130338,0.09479397466500696,0.030388839542865753
+cpm_dynamic_fusion,5,best_auuc,results/cpm_dynamic_fusion/seed_5/best_auuc_checkpoint.pth,0.01499414131894969,0.03773119422860507,0.09579238659406634,0.030486397445201874

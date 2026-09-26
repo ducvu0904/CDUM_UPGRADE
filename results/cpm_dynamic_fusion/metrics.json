@@ -1,0 +1,52 @@
+{
+  "model": "cpm_dynamic_fusion",
+  "seeds": {
+    "3": {
+      "seed": 3,
+      "best_epoch": 10,
+      "val_loss": 0.015008,
+      "val_auuc": 0.035501,
+      "test_auuc": 0.036268,
+      "test_qini": 0.092156,
+      "test_lift@30": 0.029933,
+      "test_loss": 0.015016,
+      "train_time_s": 807.3,
+      "comparison": {
+        "best_auuc": {
+          "epoch": 10,
+          "val_loss": 0.015008,
+          "val_auuc": 0.035501,
+          "test_auuc": 0.036268,
+          "test_qini": 0.092156,
+          "test_lift@30": 0.029933
+        },
+        "best_loss": {
+          "epoch": 15,
+          "val_loss": 0.014989,
+          "val_auuc": 0.033791,
+          "test_auuc": 0.036077,
+          "test_qini": 0.091616,
+          "test_lift@30": 0.030062
+        }
+      }
+    }
+  },
+  "summary": {
+    "mean": {
+      "best_epoch": 10.0,
+      "val_loss": 0.015008,
+      "val_auuc": 0.035501,
+      "test_auuc": 0.036268,
+      "test_qini": 0.092156,
+      "test_lift@30": 0.029933
+    },
+    "std": {
+      "best_epoch": 0.0,
+      "val_loss": 0.0,
+      "val_auuc": 0.0,
+      "test_auuc": 0.0,
+      "test_qini": 0.0,
+      "test_lift@30": 0.0
+    }
+  }
+}

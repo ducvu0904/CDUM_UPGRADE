@@ -24,10 +24,10 @@ Run tests using `ml_env`:
 python CDUM/smoke_test.py
 
 # 2. Dynamic fusion variant smoke test (shapes, algebra, tower hooks, grad isolation)
-python CDUM/smoke_test_dynamic_fusion.py
+python CDUM/smoke_test_two_branch_dynamic_fusion.py
 
 # 3. Integration test suite (CLI overrides, YAML config merging, model dispatch, evaluate)
-python experiment/smoke_test_dynamic_fusion.py
+python experiment/smoke_test_two_branch_dynamic_fusion.py
 ```
 
 ### Training & Evaluation
@@ -38,8 +38,8 @@ python experiment/main.py --config experiment/config.yaml
 # Fast debug run (subsample data, 1 epoch, single seed)
 python experiment/main.py --config experiment/config.yaml --max_samples 1000 --epochs 1 --seed 1 --results_dir /tmp/debug_results
 
-# Explicit model selection ('cdum' [or alias 'cpm'], 'cpm_dynamic_fusion')
-python experiment/main.py --model cpm_dynamic_fusion --router_hidden_dim 64 --seeds 1 2 3
+# Explicit model selection ('cdum' [or alias 'cpm'], 'two_branch_dynamic_fusion', 'drfu')
+python experiment/main.py --model drfu --router_hidden_dim 64 --seeds 1 2 3
 
 # Standalone evaluation on test set across seeds
 python experiment/evaluate.py --config experiment/config.yaml --all_seeds --checkpoint_type best_auuc
@@ -69,7 +69,8 @@ python CDUM/inspect_checkpoint.py --config results/cdum/config.json --results_di
 
 - **Hadamard Mask Constraint**: `tower_hidden_dim` **must equal** `refine_dim` (default `32`). `TreatmentTower` computes element-wise product `h * e_ind`, which fails if dimensions diverge.
 - **Treatment Embedding Scaling**: `treatment_dim` defaults to `embedding_dim * 4` (i.e. `32 * 4 = 128`).
-- **VALOR Branch Invariant (`cpm_dynamic_fusion`)**: The VALOR interaction branch receives raw pre-refine treatment embedding `e_t` (`Linear(e_t)`), **never** `e_guidance` or `e_indicator`.
+- **Treatment-Interaction Invariant (`two_branch_dynamic_fusion` and `drfu`)**: The interaction module receives raw pre-refine treatment embedding `e_t` (`Linear(e_t)`), **never** `e_guidance` or `e_indicator`.
+- **Competitive Softmax Bias Invariant (`drfu`)**: Set `bias=False` only on layers that directly produce competitive Softmax logits (`GuidanceGate.gate` and `DRFURouter.fc2`). Keep normal biases in `TreatmentRefine`, the treatment-interaction sigmoid mask, experts, prognostic MLP, towers, and router `fc1`. Initialize the trainable `TreatmentRefine.indicator_output.bias` to zero.
 - **Factual-Outcome Loss**: `CPMTrainer` optimizes **only** factual Huber loss (`y_factual` vs observed outcome `y`). Potential outcomes (`y0`, `y1`) and uplift (`y1 - y0`) are calculated solely for evaluation/AUUC metrics, never directly backpropagated.
 - **LR Scheduling**: `ReduceLROnPlateau` always steps on `val_loss`, even when `monitor_metric` is `val_auuc`.
 - **Optuna Tuning Seed Separation**:
@@ -85,7 +86,7 @@ python CDUM/inspect_checkpoint.py --config results/cdum/config.json --results_di
 - **Equidistant Discretization (`OfficialCPMBucketer`)**:
   - Continuous features `f0..f11` are bucketed to `[0, 100]` (101 bins): `scaled = x_j / denominator_j * 100`.
   - **Rule**: Denominators `denominator_j = max(1e-8, max(train_feature_j))` must be computed **only** on the training split. Never fit on val or test splits.
-  - `prepare_loaders_for_model` wraps raw loaders with `BucketedDataLoader` for models requiring integer bucket IDs (`cdum`, `cpm`, `cpm_dynamic_fusion`).
+  - `prepare_loaders_for_model` wraps raw loaders with `BucketedDataLoader` for models requiring integer bucket IDs (`cdum`, `cpm`, `two_branch_dynamic_fusion`, `drfu`).
 
 ---
 

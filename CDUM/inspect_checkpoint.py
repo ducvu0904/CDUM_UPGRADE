@@ -13,8 +13,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from CDUM.cpm import CPM
-from CDUM.variants.cpm_dynamic_fusion import CPMDynamicFusion
-from CDUM.variants import CPMThreeBranchDynamicFusion
+from CDUM.variants import DRFU, TwoBranchDynamicFusion
 
 
 def detect_and_load_model(config_path: Optional[str] = None, state_dict: Optional[dict] = None) -> torch.nn.Module:
@@ -27,13 +26,18 @@ def detect_and_load_model(config_path: Optional[str] = None, state_dict: Optiona
     # Check model architecture type
     is_variant = False
     model_name = str(cfg.get("model", cfg.get("model_name", ""))).lower()
-    is_three_branch = model_name == "cpm_three_branch_dynamic_fusion"
+    is_three_branch = model_name in ("drfu", "cpm_three_branch_dynamic_fusion")
     if state_dict is not None:
         is_three_branch = is_three_branch or any(k.startswith("prognostic_branch.") for k in state_dict)
-    if is_three_branch or model_name in ("cpm_dynamic_fusion", "dynamic_fusion"):
+    if is_three_branch or model_name in (
+        "two_branch_dynamic_fusion", "cpm_dynamic_fusion", "dynamic_fusion"
+    ):
         is_variant = True
     elif state_dict is not None:
-        if any(k.startswith("valor_branch.") or k.startswith("router.") for k in state_dict.keys()):
+        if any(
+            k.startswith(("treatment_interaction.", "valor_branch.", "router."))
+            for k in state_dict.keys()
+        ):
             is_variant = True
 
     # Shared kwargs
@@ -55,7 +59,9 @@ def detect_and_load_model(config_path: Optional[str] = None, state_dict: Optiona
 
     if is_variant:
         model_kwargs["router_hidden_dim"] = cfg.get("router_hidden_dim", None)
-        model_kwargs["valor_hidden_dim"] = cfg.get("valor_hidden_dim", None)
+        model_kwargs["interaction_hidden_dim"] = cfg.get(
+            "interaction_hidden_dim", cfg.get("valor_hidden_dim", None)
+        )
         if is_three_branch:
             model_kwargs["prognostic_hidden_dim"] = cfg.get("prognostic_hidden_dim", None)
             # Without a config, tensor shapes reconstruct dimensions (activation
@@ -73,11 +79,15 @@ def detect_and_load_model(config_path: Optional[str] = None, state_dict: Optiona
                     "expert_hidden_dim": state_dict["user_experts.experts.0.hidden.weight"].shape[0],
                     "expert_dim": state_dict["user_experts.experts.0.output.weight"].shape[0],
                     "router_hidden_dim": state_dict["router.fc1.weight"].shape[0],
-                    "valor_hidden_dim": state_dict["valor_branch.mlp.hidden.weight"].shape[0],
+                    "interaction_hidden_dim": state_dict[
+                        "treatment_interaction.mlp.hidden.weight"
+                        if "treatment_interaction.mlp.hidden.weight" in state_dict
+                        else "valor_branch.mlp.hidden.weight"
+                    ].shape[0],
                     "prognostic_hidden_dim": state_dict["prognostic_branch.mlp.hidden.weight"].shape[0],
                 })
-            return CPMThreeBranchDynamicFusion(**model_kwargs)
-        return CPMDynamicFusion(**model_kwargs)
+            return DRFU(**model_kwargs)
+        return TwoBranchDynamicFusion(**model_kwargs)
     return CPM(**model_kwargs)
 
 
@@ -86,13 +96,13 @@ def inspect_checkpoint(
     ckpt_path: str,
     sample_batch: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
 ) -> Dict[str, Any]:
-    """Inspect all gates: guidance gates, indicator mask, VALOR treatment gate, and dynamic router."""
+    """Inspect guidance, indicator, treatment-interaction, and router gates."""
     state_dict = torch.load(ckpt_path, map_location="cpu")
     model.load_state_dict(state_dict)
     model.eval()
 
-    is_variant = isinstance(model, CPMDynamicFusion) or (
-        hasattr(model, "valor_branch") and hasattr(model, "router")
+    is_variant = isinstance(model, TwoBranchDynamicFusion) or (
+        hasattr(model, "treatment_interaction") and hasattr(model, "router")
     )
 
     with torch.no_grad():
@@ -126,37 +136,44 @@ def inspect_checkpoint(
             "ind1_mean": e_ind1.mean().item(),
         }
 
-        # ── 2. VALOR Treatment Gating Mask & Dynamic Router (Variant Only) ───
+        # ── 2. Treatment-Interaction Gating Mask & Dynamic Router ────────────
         if is_variant:
-            # 2a. VALOR Treatment-Gating Mask m_t = Sigmoid(Linear_t(e_t))
-            m0 = torch.sigmoid(model.valor_branch.linear_t(t_emb0)).squeeze(0)
-            m1 = torch.sigmoid(model.valor_branch.linear_t(t_emb1)).squeeze(0)
+            # 2a. Treatment-Interaction Gating Mask m_t = Sigmoid(Linear_t(e_t))
+            m0 = torch.sigmoid(model.treatment_interaction.linear_t(t_emb0)).squeeze(0)
+            m1 = torch.sigmoid(model.treatment_interaction.linear_t(t_emb1)).squeeze(0)
             m_abs_diff = (m0 - m1).abs()
             top_diff_indices = torch.topk(m_abs_diff, k=min(5, m_abs_diff.shape[0])).indices.tolist()
 
             metrics.update({
-                "valor_mask_diff_mean": m_abs_diff.mean().item(),
-                "valor_mask_diff_max": m_abs_diff.max().item(),
-                "valor_m0_mean": m0.mean().item(),
-                "valor_m1_mean": m1.mean().item(),
-                "valor_m0_min": m0.min().item(),
-                "valor_m0_max": m0.max().item(),
-                "valor_m1_min": m1.min().item(),
-                "valor_m1_max": m1.max().item(),
-                "valor_top_diff_dims": [
+                "interaction_mask_diff_mean": m_abs_diff.mean().item(),
+                "interaction_mask_diff_max": m_abs_diff.max().item(),
+                "interaction_m0_mean": m0.mean().item(),
+                "interaction_m1_mean": m1.mean().item(),
+                "interaction_m0_min": m0.min().item(),
+                "interaction_m0_max": m0.max().item(),
+                "interaction_m1_min": m1.min().item(),
+                "interaction_m1_max": m1.max().item(),
+                "interaction_top_diff_dims": [
                     {"dim": int(idx), "m0": round(m0[idx].item(), 4), "m1": round(m1[idx].item(), 4), "diff": round(m_abs_diff[idx].item(), 4)}
                     for idx in top_diff_indices
                 ],
             })
 
             # 2b. Router Static Intrinsic Bias / Prior
-            branch_names = getattr(model.router, "branch_names", ("C", "V"))
+            branch_names = getattr(model.router, "branch_names", ("C", "I"))
             if hasattr(model.router, "fc2") and model.router.fc2.bias is not None:
                 bias = model.router.fc2.bias
                 prior = torch.softmax(bias, dim=-1)
                 for i, name in enumerate(branch_names):
                     metrics[f"router_bias_{name}"] = bias[i].item()
                     metrics[f"router_prior_{name}"] = prior[i].item()
+            elif hasattr(model.router, "fc2"):
+                metrics["router_logit_bias_free"] = True
+                zero_q = torch.zeros(1, model.router.fc1.in_features)
+                zero_logits = model.router.fc2(model.router.relu(model.router.fc1(zero_q)))
+                zero_weights = torch.softmax(zero_logits, dim=-1).squeeze(0)
+                for i, name in enumerate(branch_names):
+                    metrics[f"router_zero_input_{name}"] = zero_weights[i].item()
 
             # ── 3. Data-Dependent Dynamic Router & Expert Inspection ──────────
             if sample_batch is not None:
@@ -197,20 +214,21 @@ def print_metrics(res: Dict[str, Any], prefix: str = "  ") -> None:
     print(f"{prefix}  g0 (control gate)  : {[round(x, 4) for x in res['g0']]}")
     print(f"{prefix}  g1 (treat gate)    : {[round(x, 4) for x in res['g1']]}")
 
-    if res.get("model_type") in ("CPMDynamicFusion", "CPMThreeBranchDynamicFusion"):
-        print(f"{prefix}[VALOR Treatment-Gating Mask (m_t = Sigmoid(Linear(e_t)))]")
-        print(f"{prefix}  valor mask diff    : mean={res['valor_mask_diff_mean']:.6f}, max={res['valor_mask_diff_max']:.6f}")
-        print(f"{prefix}  mask m0 (control)  : mean={res['valor_m0_mean']:.4f}, min={res['valor_m0_min']:.4f}, max={res['valor_m0_max']:.4f}")
-        print(f"{prefix}  mask m1 (treat)    : mean={res['valor_m1_mean']:.4f}, min={res['valor_m1_min']:.4f}, max={res['valor_m1_max']:.4f}")
-        top_dims_str = ", ".join(f"d{item['dim']}: |{item['m0']:.2f}-{item['m1']:.2f}|={item['diff']:.2f}" for item in res.get("valor_top_diff_dims", []))
+    if res.get("model_type") in ("TwoBranchDynamicFusion", "DRFU"):
+        print(f"{prefix}[Treatment-Interaction Gating Mask (m_t = Sigmoid(Linear(e_t)))]")
+        print(f"{prefix}  interaction mask diff    : mean={res['interaction_mask_diff_mean']:.6f}, max={res['interaction_mask_diff_max']:.6f}")
+        print(f"{prefix}  mask m0 (control)  : mean={res['interaction_m0_mean']:.4f}, min={res['interaction_m0_min']:.4f}, max={res['interaction_m0_max']:.4f}")
+        print(f"{prefix}  mask m1 (treat)    : mean={res['interaction_m1_mean']:.4f}, min={res['interaction_m1_min']:.4f}, max={res['interaction_m1_max']:.4f}")
+        top_dims_str = ", ".join(f"d{item['dim']}: |{item['m0']:.2f}-{item['m1']:.2f}|={item['diff']:.2f}" for item in res.get("interaction_top_diff_dims", []))
         print(f"{prefix}  top diff channels  : {top_dims_str}")
 
-        if res["model_type"] == "CPMThreeBranchDynamicFusion":
+        if res["model_type"] == "DRFU":
             names = ("P", "C", "I")
             print(f"{prefix}[Dynamic Fusion Router: P=prognostic, C=CPM, I=interaction]")
-            if "router_prior_P" in res:
-                prior = ", ".join(f"pi_{n}={res[f'router_prior_{n}']:.4f}" for n in names)
-                print(f"{prefix}  bias-only prior    : {prior}")
+            if res.get("router_logit_bias_free"):
+                baseline = ", ".join(f"pi_{n}={res[f'router_zero_input_{n}']:.4f}" for n in names)
+                print(f"{prefix}  final logits       : fc2 bias=False")
+                print(f"{prefix}  zero-input output   : {baseline}")
             if res.get("data_evaluated"):
                 for label in ("ctrl", "treat"):
                     weights = ", ".join(f"pi_{n}={res[f'router_{label}_pi_{n}']:.4f}" for n in names)
@@ -219,20 +237,21 @@ def print_metrics(res: Dict[str, Any], prefix: str = "  ") -> None:
                 print(f"{prefix}  shared z_P max diff: {res['prognostic_candidate_diff']:.6f}")
             return
 
-        print(f"{prefix}[Dynamic Fusion Router Gate (pi = Softmax(MLP([z_C, z_V])))]")
+        print(f"{prefix}[Dynamic Fusion Router Gate (pi = Softmax(MLP([z_C, z_I])))]")
         if "router_prior_C" in res:
-            print(f"{prefix}  intrinsic prior    : pi_C (CPM)={res['router_prior_C']:.4f} | pi_V (VALOR)={res['router_prior_V']:.4f} (fc2 bias: [{res['router_bias_C']:.4f}, {res['router_bias_V']:.4f}])")
+            suffix = " (bias-free)" if res.get("router_bias_free") else f" (fc2 bias: [{res['router_bias_C']:.4f}, {res['router_bias_I']:.4f}])"
+            print(f"{prefix}  intrinsic prior    : pi_C (CPM)={res['router_prior_C']:.4f} | pi_I (Interaction)={res['router_prior_I']:.4f}{suffix}")
 
         if res.get("data_evaluated"):
-            print(f"{prefix}  control branch (t=0): pi_C={res['router_ctrl_pi_C']:.4f}, pi_V={res['router_ctrl_pi_V']:.4f}, entropy={res['router_ctrl_entropy']:.4f} (norms: ||z_C||={res['z_C_ctrl_norm']:.2f}, ||z_V||={res['z_V_ctrl_norm']:.2f})")
-            print(f"{prefix}  treat branch   (t=1): pi_C={res['router_treat_pi_C']:.4f}, pi_V={res['router_treat_pi_V']:.4f}, entropy={res['router_treat_entropy']:.4f} (norms: ||z_C||={res['z_C_treat_norm']:.2f}, ||z_V||={res['z_V_treat_norm']:.2f})")
+            print(f"{prefix}  control branch (t=0): pi_C={res['router_ctrl_pi_C']:.4f}, pi_I={res['router_ctrl_pi_I']:.4f}, entropy={res['router_ctrl_entropy']:.4f} (norms: ||z_C||={res['z_C_ctrl_norm']:.2f}, ||z_I||={res['z_I_ctrl_norm']:.2f})")
+            print(f"{prefix}  treat branch   (t=1): pi_C={res['router_treat_pi_C']:.4f}, pi_I={res['router_treat_pi_I']:.4f}, entropy={res['router_treat_entropy']:.4f} (norms: ||z_C||={res['z_C_treat_norm']:.2f}, ||z_I||={res['z_I_treat_norm']:.2f})")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inspect CPM / CPMDynamicFusion checkpoint gating diagnostics without retraining.")
-    parser.add_argument("--config", type=str, default="results/cpm_dynamic_fusion/config.json", help="Path to config.json")
+    parser = argparse.ArgumentParser(description="Inspect CPM fusion checkpoint gating diagnostics without retraining.")
+    parser.add_argument("--config", type=str, default="results/drfu/config.json", help="Path to config.json")
     parser.add_argument("--ckpt", type=str, default=None, help="Specific checkpoint path (.pth)")
-    parser.add_argument("--results_dir", type=str, default="results/cpm_dynamic_fusion", help="Directory containing seed checkpoints")
+    parser.add_argument("--results_dir", type=str, default="results/drfu", help="Directory containing seed checkpoints")
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5], help="Seed list to evaluate")
     parser.add_argument("--checkpoint_type", type=str, default="best_auuc", choices=["best_auuc", "best", "best_loss", "last"],
                         help="Checkpoint filename type to resolve when scanning results_dir.")
@@ -254,7 +273,7 @@ def main():
                 cfg_data = json.load(f)
             for k, v in cfg_data.items():
                 setattr(main_args, k, v)
-        model_name = getattr(main_args, "model", "cpm_dynamic_fusion")
+        model_name = getattr(main_args, "model", "drfu")
         _, _, eval_test_loader = prepare_loaders_for_model(model_name, main_args, train_l, val_l, raw_test_l)
         sample_batch = next(iter(eval_test_loader))
         print("  ✅ Sample batch loaded successfully.")

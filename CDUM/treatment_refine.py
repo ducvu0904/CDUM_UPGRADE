@@ -7,15 +7,17 @@ class TreatmentRefine(nn.Module):
                  hidden_dim: int = 64,
                  output_dim: int = 32):
         super(TreatmentRefine, self).__init__()
-        
+
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
 
         self.guidance_hidden = nn.Linear(treatment_dim, hidden_dim)
         self.guidance_output = nn.Linear(hidden_dim, output_dim)
-        
-        self.indicator_hidden = nn.Linear(treatment_dim,  hidden_dim)
+
+        self.indicator_hidden = nn.Linear(treatment_dim, hidden_dim)
         self.indicator_output = nn.Linear(hidden_dim, output_dim)
+        if self.indicator_output.bias is not None:
+            nn.init.zeros_(self.indicator_output.bias)
 
     def forward(self, t_emb: torch.Tensor):
         
@@ -30,4 +32,3 @@ class TreatmentRefine(nn.Module):
         e_indicator = self.sigmoid(e_indicator)
 
         return e_guidance, e_indicator
-        

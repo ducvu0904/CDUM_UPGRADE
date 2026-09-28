@@ -254,15 +254,13 @@ class CPMTrainer:
                 patience_counter += 1
 
             if verbose:
-                val_text = f" | Val Loss: {val_loss:.5f} | Val AUUC: {val_auuc:.5f}" if val_loader is not None else ""
                 logger.info(
-                    "Epoch [%02d/%02d]  Train Loss: %.5f%s | Best (%s): %.5f | LR: %.6f | EarlyStop: %d/%d",
+                    "Epoch [%02d/%02d] Train Loss: %.5f | Val Loss: %.5f | Val AUUC: %.5f | LR: %.6f | Patience: %d/%d",
                     epoch,
                     epochs,
                     train_loss,
-                    val_text,
-                    monitor,
-                    best_monitor_score,
+                    val_loss,
+                    val_auuc,
                     self.optimizer.param_groups[0]["lr"],
                     patience_counter,
                     early_stopping_patience,
@@ -312,7 +310,10 @@ class CPMTrainer:
         total_loss = 0.0
         n_batches = 0
         uplift_scores, treatments, outcomes = [], [], []
-        is_dynamic_fusion = hasattr(self.model, "valor_branch") and hasattr(self.model, "router")
+        is_dynamic_fusion = (
+            hasattr(self.model, "treatment_interaction")
+            and hasattr(self.model, "router")
+        )
         y0_all, y1_all = [], []
         g0_all, g1_all = [], []
         ind0_all, ind1_all = [], []
@@ -382,9 +383,9 @@ class CPMTrainer:
             ind0_m = e_ind0.mean().item()
             ind1_m = e_ind1.mean().item()
 
-            model_tag = "CPM_DYNAMIC_FUSION" if is_dynamic_fusion else "CPM"
+            model_tag = "TWO_BRANCH_DYNAMIC_FUSION" if is_dynamic_fusion else "CPM"
             if hasattr(self.model, "prognostic_branch"):
-                model_tag = "CPM_THREE_BRANCH_DYNAMIC_FUSION"
+                model_tag = "DRFU"
             bar_len = max(10, 68 - len(model_tag) - 17)
             logger.info("── Diagnostics [%s] %s", model_tag, "─" * bar_len)
             logger.info(
@@ -399,12 +400,12 @@ class CPMTrainer:
                 t_diff, gui_diff, ind_diff, ind0_m, ind1_m,
             )
 
-            if is_dynamic_fusion and hasattr(self.model, "valor_branch"):
-                m0_vec = torch.sigmoid(self.model.valor_branch.linear_t(t_emb0))
-                m1_vec = torch.sigmoid(self.model.valor_branch.linear_t(t_emb1))
+            if is_dynamic_fusion:
+                m0_vec = torch.sigmoid(self.model.treatment_interaction.linear_t(t_emb0))
+                m1_vec = torch.sigmoid(self.model.treatment_interaction.linear_t(t_emb1))
                 m_diff = (m0_vec - m1_vec).abs()
                 logger.info(
-                    "  VALOR    : m0=%.4f | m1=%.4f | Δmask=%.4f (max=%.4f)",
+                    "  Interaction: m0=%.4f | m1=%.4f | Δmask=%.4f (max=%.4f)",
                     m0_vec.mean().item(),
                     m1_vec.mean().item(),
                     m_diff.mean().item(),
@@ -415,6 +416,8 @@ class CPMTrainer:
                 if hasattr(self.model.router, "fc2") and self.model.router.fc2.bias is not None:
                     prior = torch.softmax(self.model.router.fc2.bias, dim=-1)
                     prior_str = "Prior=[" + ", ".join(f"{v:.3f}" for v in prior.tolist()) + "] | "
+                elif hasattr(self.model.router, "fc2"):
+                    prior_str = "fc2 bias=False | "
 
                 if pi0_all and pi1_all:
                     pi0 = torch.cat(pi0_all, dim=0)

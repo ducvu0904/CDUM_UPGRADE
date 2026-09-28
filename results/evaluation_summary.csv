@@ -1,2 +1,0 @@
-model,seed,checkpoint_type,checkpoint_path,loss,auuc,qini,lift@30%
-cpm_dynamic_fusion,1,best_auuc,results/cpm_dynamic_fusion/seed_1/best_auuc_checkpoint.pth,0.015017933345655774,0.03703831314213605,0.09401083718176692,0.031131692230701447

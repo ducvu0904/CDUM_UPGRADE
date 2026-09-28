@@ -1,21 +1,21 @@
 """CDUM model variants package."""
 
-from .cpm_dynamic_fusion import (
-    CPMDynamicFusion,
+from .two_branch_dynamic_fusion import (
+    TwoBranchDynamicFusion,
     DynamicFusionRouter,
-    ValorTreatmentGatedBranch,
 )
-from .cpm_three_branch_dynamic_fusion import (
-    CPMThreeBranchDynamicFusion,
+from .treatment_interaction import TreatmentInteraction
+from .drfu import (
+    DRFU,
+    DRFURouter,
     PrognosticBranch,
-    ThreeBranchDynamicFusionRouter,
 )
 
 __all__ = [
-    "CPMDynamicFusion",
+    "TwoBranchDynamicFusion",
     "DynamicFusionRouter",
-    "ValorTreatmentGatedBranch",
-    "CPMThreeBranchDynamicFusion",
+    "TreatmentInteraction",
+    "DRFU",
+    "DRFURouter",
     "PrognosticBranch",
-    "ThreeBranchDynamicFusionRouter",
 ]

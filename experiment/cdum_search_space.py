@@ -1,15 +1,17 @@
 """
-cdum_search_space.py — Hyperparameter search space definition for CPM + VALOR + Dynamic Fusion Optuna tuning.
+cdum_search_space.py — Hyperparameter search space definition for CPM + Treatment Interaction + Dynamic Fusion Optuna tuning.
 """
 
 from typing import Dict, Any
 import optuna
 
-# ── Tunable Search Space for CPM + VALOR + Dynamic Fusion (Coarse Search) ────
-# 3 * 3 * 3 * 3 * 3 = 243 total categorical combinations.
+# ── Tunable Search Space for CPM Variants (Coarse Search) ────────────────────
+# 3^7 = 2,187 total combinations for 3-branch; 3^6 = 729 for 2-branch.
 SEARCH_SPACE = {
+    "expert_dim": [32, 64, 128],
     "router_hidden_dim": [32, 64, 128],
-    "valor_hidden_dim": [64, 128, 256],
+    "interaction_hidden_dim": [64, 128, 256],
+    "prognostic_hidden_dim": [64, 128, 256],
     "expert_hidden_dim": [64, 128, 256],
     "lr": [1e-4, 3e-4, 1e-3],
     "weight_decay": [0.0, 1e-6, 1e-4],
@@ -32,7 +34,7 @@ FIXED_PARAMS = {
     "embedding_dim": 32,
     "treatment_dim": 128,  # embedding_dim * 4
     "num_experts": 3,
-    "expert_dim": 64,  # frozen for coarse search stage
+    "expert_dim": 64,  # default fallback if not sampled
     "refine_hidden_dim": 64,  # current/default value
     "refine_dim": 32,  # matches tower_hidden_dim for Hadamard mask
     "tower_hidden_dim": 32,  # matches refine_dim for Hadamard mask
@@ -49,12 +51,18 @@ FIXED_PARAMS = {
 }
 
 
-def sample_cdum_params(trial: optuna.Trial) -> Dict[str, Any]:
-    """Sample hyperparameters for CPM + VALOR + Dynamic Fusion coarse search."""
-    return {
+def sample_cdum_params(trial: optuna.Trial, model: str = "drfu") -> Dict[str, Any]:
+    """Sample hyperparameters for CPM variants coarse search."""
+    params = {
+        "expert_dim": trial.suggest_categorical("expert_dim", SEARCH_SPACE["expert_dim"]),
         "router_hidden_dim": trial.suggest_categorical("router_hidden_dim", SEARCH_SPACE["router_hidden_dim"]),
-        "valor_hidden_dim": trial.suggest_categorical("valor_hidden_dim", SEARCH_SPACE["valor_hidden_dim"]),
+        "interaction_hidden_dim": trial.suggest_categorical("interaction_hidden_dim", SEARCH_SPACE["interaction_hidden_dim"]),
         "expert_hidden_dim": trial.suggest_categorical("expert_hidden_dim", SEARCH_SPACE["expert_hidden_dim"]),
         "lr": trial.suggest_categorical("lr", SEARCH_SPACE["lr"]),
         "weight_decay": trial.suggest_categorical("weight_decay", SEARCH_SPACE["weight_decay"]),
     }
+    if model != "two_branch_dynamic_fusion" and "prognostic_hidden_dim" in SEARCH_SPACE:
+        params["prognostic_hidden_dim"] = trial.suggest_categorical(
+            "prognostic_hidden_dim", SEARCH_SPACE["prognostic_hidden_dim"]
+        )
+    return params

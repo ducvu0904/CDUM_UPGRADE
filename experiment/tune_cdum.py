@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-tune_cdum.py — Optuna Hyperparameter Tuning Pipeline for CPM + VALOR + Dynamic Fusion.
+tune_cdum.py — Optuna Hyperparameter Tuning Pipeline for CPM + Treatment Interaction + Dynamic Fusion.
 ====================================================================================
 
 Objective:
-    Find the peak validation performance of CPM + VALOR + Dynamic Fusion
+    Find the peak validation performance of CPM + Treatment Interaction + Dynamic Fusion
     via a coarse search over router capacity, branch bottlenecks, and optimization.
 
 Separation of Concerns:
-    - Model:                  CPMDynamicFusion (tune ONLY the new model)
+    - Models:                 DRFU or TwoBranchDynamicFusion
     - Tuning seeds:           [10, 11, 12]  (completely separate from final eval seeds 1-5)
     - Epoch / checkpoint:     argmin(val_loss) per seed
     - Hyperparameter goal:    maximize mean(val_auuc) across tuning seeds at best-val-loss checkpoints
@@ -40,11 +40,11 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from CDUM.variants import CPMDynamicFusion
+from CDUM.variants import DRFU, TwoBranchDynamicFusion
 from CDUM.trainer import CPMTrainer
 from preprocess.data_loader import get_dataloaders
 from preprocess.cpm_processor import OfficialCPMBucketer
-from experiment.main import BucketedDataLoader, set_seed
+from experiment.main import BucketedDataLoader, canonical_model_name, set_seed
 from experiment.cdum_search_space import SEARCH_SPACE, FIXED_PARAMS, sample_cdum_params
 
 # Configure logger
@@ -77,8 +77,10 @@ class OptunaTrialRecorder:
         self.columns = [
             "trial_number",
             "state",
+            "expert_dim",
             "router_hidden_dim",
-            "valor_hidden_dim",
+            "interaction_hidden_dim",
+            "prognostic_hidden_dim",
             "expert_hidden_dim",
             "lr",
             "weight_decay",
@@ -112,8 +114,10 @@ class OptunaTrialRecorder:
         row_dict = {
             "trial_number": trial_number,
             "state": state,
+            "expert_dim": params.get("expert_dim"),
             "router_hidden_dim": params.get("router_hidden_dim"),
-            "valor_hidden_dim": params.get("valor_hidden_dim"),
+            "interaction_hidden_dim": params.get("interaction_hidden_dim"),
+            "prognostic_hidden_dim": params.get("prognostic_hidden_dim"),
             "expert_hidden_dim": params.get("expert_hidden_dim"),
             "lr": params.get("lr"),
             "weight_decay": params.get("weight_decay"),
@@ -227,14 +231,15 @@ class DeduplicatedTPESampler(optuna.samplers.TPESampler):
 
 
 def run_tuning(args: argparse.Namespace) -> optuna.Study:
-    """Run Optuna study for CPM + VALOR + Dynamic Fusion with explicit seed-level pruning."""
+    """Run Optuna study for CPM + Treatment Interaction + Dynamic Fusion with explicit seed-level pruning."""
     validate_seeds(args.seeds)
 
+    model_name = canonical_model_name(getattr(args, "model", "drfu"))
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("============================================================")
-    logger.info("  OPTUNA CPM + VALOR + DYNAMIC FUSION TUNING (Criteo)")
+    logger.info("  OPTUNA %s TUNING (Criteo)", model_name.upper())
     logger.info("============================================================")
-    logger.info("Model:                     CPMDynamicFusion")
+    logger.info("Model:                     %s", model_name)
     logger.info("Tuning Seeds:              %s", args.seeds)
     logger.info("Device:                    %s", device)
     logger.info("Epochs per seed:           %d (Early stopping patience: %d)", args.epochs, args.early_stopping)
@@ -293,28 +298,48 @@ def run_tuning(args: argparse.Namespace) -> optuna.Study:
 
     # ── 4. Define Objective Function ──────────────────────────────────────────
     def objective(trial: optuna.Trial) -> float:
-        # Sample hyperparameters from coarse search space
-        params = sample_cdum_params(trial)
+        # Sample hyperparameters from search space
+        params = sample_cdum_params(trial, model=model_name)
+        expert_dim = params.get("expert_dim", FIXED_PARAMS.get("expert_dim", 64))
         router_hidden_dim = params["router_hidden_dim"]
-        valor_hidden_dim = params["valor_hidden_dim"]
+        interaction_hidden_dim = params["interaction_hidden_dim"]
         expert_hidden_dim = params["expert_hidden_dim"]
+        prognostic_hidden_dim = params.get("prognostic_hidden_dim", expert_hidden_dim)
         lr = params["lr"]
         weight_decay = params["weight_decay"]
 
         trial_dir = os.path.join(args.output_dir, "trials", f"trial_{trial.number:03d}")
         os.makedirs(trial_dir, exist_ok=True)
 
-        logger.info(
-            "\n>>> [Trial %03d/%03d] Testing configuration (CPM + VALOR + Dynamic Fusion):\n"
-            "    router_hidden_dim=%d | valor_hidden_dim=%d | expert_hidden_dim=%d | lr=%s | weight_decay=%s",
-            trial.number,
-            args.n_trials,
-            router_hidden_dim,
-            valor_hidden_dim,
-            expert_hidden_dim,
-            lr,
-            weight_decay,
-        )
+        if model_name == "drfu":
+            logger.info(
+                "\n>>> [Trial %03d/%03d] Testing configuration (%s):\n"
+                "    expert_dim=%d | router_hidden_dim=%d | interaction_hidden_dim=%d | prognostic_hidden_dim=%d | expert_hidden_dim=%d | lr=%s | weight_decay=%s",
+                trial.number,
+                args.n_trials,
+                model_name,
+                expert_dim,
+                router_hidden_dim,
+                interaction_hidden_dim,
+                prognostic_hidden_dim,
+                expert_hidden_dim,
+                lr,
+                weight_decay,
+            )
+        else:
+            logger.info(
+                "\n>>> [Trial %03d/%03d] Testing configuration (%s):\n"
+                "    expert_dim=%d | router_hidden_dim=%d | interaction_hidden_dim=%d | expert_hidden_dim=%d | lr=%s | weight_decay=%s",
+                trial.number,
+                args.n_trials,
+                model_name,
+                expert_dim,
+                router_hidden_dim,
+                interaction_hidden_dim,
+                expert_hidden_dim,
+                lr,
+                weight_decay,
+            )
 
         seed_scores: List[float] = []
         seed_records: Dict[int, Dict[str, Any]] = {}
@@ -334,24 +359,44 @@ def run_tuning(args: argparse.Namespace) -> optuna.Study:
                 raw_train_loader.sampler.generator = gen
                 raw_train_loader.generator = gen
 
-            # Construct CPMDynamicFusion with sampled parameters + frozen parameters
-            model = CPMDynamicFusion(
-                num_features=FIXED_PARAMS["num_features"],
-                num_bins=FIXED_PARAMS["num_bins"],
-                embedding_dim=FIXED_PARAMS["embedding_dim"],
-                treatment_dim=FIXED_PARAMS["treatment_dim"],
-                refine_hidden_dim=FIXED_PARAMS["refine_hidden_dim"],
-                refine_dim=FIXED_PARAMS["refine_dim"],
-                num_experts=FIXED_PARAMS["num_experts"],
-                expert_hidden_dim=expert_hidden_dim,
-                expert_dim=FIXED_PARAMS["expert_dim"],
-                tower_hidden_dim=FIXED_PARAMS["tower_hidden_dim"],
-                activation=FIXED_PARAMS["expert_activation"],
-                dropout_rate=FIXED_PARAMS["dropout_rate"],
-                use_bn=FIXED_PARAMS["use_bn"],
-                router_hidden_dim=router_hidden_dim,
-                valor_hidden_dim=valor_hidden_dim,
-            )
+            # Construct variant model with sampled parameters + frozen parameters
+            if model_name == "drfu":
+                model = DRFU(
+                    num_features=FIXED_PARAMS["num_features"],
+                    num_bins=FIXED_PARAMS["num_bins"],
+                    embedding_dim=FIXED_PARAMS["embedding_dim"],
+                    treatment_dim=FIXED_PARAMS["treatment_dim"],
+                    refine_hidden_dim=FIXED_PARAMS["refine_hidden_dim"],
+                    refine_dim=FIXED_PARAMS["refine_dim"],
+                    num_experts=FIXED_PARAMS["num_experts"],
+                    expert_hidden_dim=expert_hidden_dim,
+                    expert_dim=expert_dim,
+                    tower_hidden_dim=FIXED_PARAMS["tower_hidden_dim"],
+                    activation=FIXED_PARAMS["expert_activation"],
+                    dropout_rate=FIXED_PARAMS["dropout_rate"],
+                    use_bn=FIXED_PARAMS["use_bn"],
+                    router_hidden_dim=router_hidden_dim,
+                    interaction_hidden_dim=interaction_hidden_dim,
+                    prognostic_hidden_dim=prognostic_hidden_dim,
+                )
+            else:
+                model = TwoBranchDynamicFusion(
+                    num_features=FIXED_PARAMS["num_features"],
+                    num_bins=FIXED_PARAMS["num_bins"],
+                    embedding_dim=FIXED_PARAMS["embedding_dim"],
+                    treatment_dim=FIXED_PARAMS["treatment_dim"],
+                    refine_hidden_dim=FIXED_PARAMS["refine_hidden_dim"],
+                    refine_dim=FIXED_PARAMS["refine_dim"],
+                    num_experts=FIXED_PARAMS["num_experts"],
+                    expert_hidden_dim=expert_hidden_dim,
+                    expert_dim=expert_dim,
+                    tower_hidden_dim=FIXED_PARAMS["tower_hidden_dim"],
+                    activation=FIXED_PARAMS["expert_activation"],
+                    dropout_rate=FIXED_PARAMS["dropout_rate"],
+                    use_bn=FIXED_PARAMS["use_bn"],
+                    router_hidden_dim=router_hidden_dim,
+                    interaction_hidden_dim=interaction_hidden_dim,
+                )
 
             trainer = CPMTrainer(
                 model=model,
@@ -372,13 +417,13 @@ def run_tuning(args: argparse.Namespace) -> optuna.Study:
                 epochs=args.epochs,
                 early_stopping_patience=args.early_stopping,
                 checkpoint_dir=seed_dir,
-                model_name="cpm_dynamic_fusion",
+                model_name=model_name,
                 monitor=args.monitor,
-                verbose=0,
+                verbose=1,
             )
 
             # Load the best checkpoint and evaluate validation AUUC
-            best_ckpt_path = os.path.join(seed_dir, "cpm_dynamic_fusion_best.pth")
+            best_ckpt_path = os.path.join(seed_dir, f"{model_name}_best.pth")
             if os.path.exists(best_ckpt_path):
                 trainer.load(best_ckpt_path)
 
@@ -465,8 +510,9 @@ def run_tuning(args: argparse.Namespace) -> optuna.Study:
         interval_steps=1,
     )
 
+    study_name = args.study_name or f"{model_name}_optuna_3seed"
     study = optuna.create_study(
-        study_name=args.study_name,
+        study_name=study_name,
         direction="maximize",
         sampler=sampler,
         pruner=pruner,
@@ -486,11 +532,17 @@ def export_study_results(study: optuna.Study, args: argparse.Namespace) -> None:
     failed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.FAIL]
 
     best_trial = study.best_trial if complete_trials else None
+    model_name = canonical_model_name(getattr(args, "model", "drfu"))
+    active_search_space = (
+        SEARCH_SPACE
+        if model_name == "drfu"
+        else {k: v for k, v in SEARCH_SPACE.items() if k != "prognostic_hidden_dim"}
+    )
 
     # ── Save cdum_best_config.json ────────────────────────────────────────────
     if best_trial is not None:
         best_config = {
-            "model_type": "cpm_dynamic_fusion",
+            "model_type": model_name,
             "monitor_metric": args.monitor,
             "best_trial_number": best_trial.number,
             "best_params": best_trial.params,
@@ -500,7 +552,6 @@ def export_study_results(study: optuna.Study, args: argparse.Namespace) -> None:
             "tuning_seeds": args.seeds,
             "fixed_hyperparameters": FIXED_PARAMS,
             "fixed_architecture_decisions": {
-                "expert_dim": FIXED_PARAMS["expert_dim"],
                 "refine_hidden_dim": FIXED_PARAMS["refine_hidden_dim"],
                 "refine_dim": FIXED_PARAMS["refine_dim"],
                 "tower_hidden_dim": FIXED_PARAMS["tower_hidden_dim"],
@@ -510,7 +561,7 @@ def export_study_results(study: optuna.Study, args: argparse.Namespace) -> None:
                 "gate_bias": False,
                 "output_activation": "softplus",
             },
-            "search_space": SEARCH_SPACE,
+            "search_space": active_search_space,
             "study_name": study.study_name,
         }
         best_config_path = os.path.join(args.output_dir, "cdum_best_config.json")
@@ -520,7 +571,7 @@ def export_study_results(study: optuna.Study, args: argparse.Namespace) -> None:
 
     # ── Save cdum_study_summary.json ──────────────────────────────────────────
     summary_data = {
-        "model_type": "cpm_dynamic_fusion",
+        "model_type": model_name,
         "monitor_metric": args.monitor,
         "study_name": study.study_name,
         "sampler": "DeduplicatedTPESampler(multivariate=True, duplicate_rejection=True)",
@@ -534,7 +585,7 @@ def export_study_results(study: optuna.Study, args: argparse.Namespace) -> None:
         "best_value": round(float(best_trial.value), 6) if best_trial else None,
         "best_params": best_trial.params if best_trial else None,
         "tuning_seeds": args.seeds,
-        "search_space": SEARCH_SPACE,
+        "search_space": active_search_space,
     }
 
     # Add top 10 ranked trials
@@ -556,40 +607,58 @@ def export_study_results(study: optuna.Study, args: argparse.Namespace) -> None:
     logger.info("Saved study summary to: %s", summary_path)
 
     # ── Print Top 10 Report Table ─────────────────────────────────────────────
-    print("\n" + "=" * 115)
-    print("  OPTUNA STUDY COMPLETION REPORT — CPM + VALOR + DYNAMIC FUSION (Criteo)")
-    print("=" * 115)
-    print(f"Model:                      CPMDynamicFusion")
+    header_width = 140 if model_name == "drfu" else 128
+    print("\n" + "=" * header_width)
+    print(f"  OPTUNA STUDY COMPLETION REPORT — {model_name.upper()} (Criteo)")
+    print("=" * header_width)
+    print(f"Model:                      {model_name}")
     print(f"Study Name:                 {study.study_name}")
     print(f"Total Trials:               {len(study.trials)}")
     print(f"  - COMPLETE Trials:        {len(complete_trials)}")
     print(f"  - PRUNED Trials:          {len(pruned_trials)}")
     print(f"  - FAIL Trials:            {len(failed_trials)}")
     print(f"Tuning Seeds:               {args.seeds}")
-    print("-" * 115)
+    print("-" * header_width)
 
     if top_10:
-        print(f"{'Rank':<5} {'Trial':<7} {'Mean Val AUUC':<16} {'Std Val AUUC':<15} {'Router Hidden':<15} {'VALOR Hidden':<15} {'Expert Hidden':<15} {'LR':<10} {'Weight Decay':<12}")
-        print("-" * 115)
-        for item in top_10:
-            p = item["params"]
-            print(
-                f"{item['rank']:<5} {item['trial_number']:<7} {item['mean_val_auuc']:<16.5f} {item['std_val_auuc']:<15.5f} "
-                f"{str(p.get('router_hidden_dim', '-')):<15} {str(p.get('valor_hidden_dim', '-')):<15} {str(p.get('expert_hidden_dim', '-')):<15} {str(p.get('lr', '-')):<10} {str(p.get('weight_decay', '-')):<12}"
-            )
-        print("-" * 115)
+        if model_name == "drfu":
+            print(f"{'Rank':<5} {'Trial':<7} {'Mean Val AUUC':<16} {'Std Val AUUC':<15} {'Expert Dim':<12} {'Router':<10} {'Treatment Interaction':<10} {'Prog Hidden':<13} {'Expert Hidden':<15} {'LR':<10} {'Weight Decay':<12}")
+            print("-" * header_width)
+            for item in top_10:
+                p = item["params"]
+                print(
+                    f"{item['rank']:<5} {item['trial_number']:<7} {item['mean_val_auuc']:<16.5f} {item['std_val_auuc']:<15.5f} "
+                    f"{str(p.get('expert_dim', '-')):<12} "
+                    f"{str(p.get('router_hidden_dim', '-')):<10} {str(p.get('interaction_hidden_dim', '-')):<10} "
+                    f"{str(p.get('prognostic_hidden_dim', '-')):<13} {str(p.get('expert_hidden_dim', '-')):<15} "
+                    f"{str(p.get('lr', '-')):<10} {str(p.get('weight_decay', '-')):<12}"
+                )
+        else:
+            print(f"{'Rank':<5} {'Trial':<7} {'Mean Val AUUC':<16} {'Std Val AUUC':<15} {'Expert Dim':<12} {'Router Hidden':<15} {'Interaction Hidden':<15} {'Expert Hidden':<15} {'LR':<10} {'Weight Decay':<12}")
+            print("-" * header_width)
+            for item in top_10:
+                p = item["params"]
+                print(
+                    f"{item['rank']:<5} {item['trial_number']:<7} {item['mean_val_auuc']:<16.5f} {item['std_val_auuc']:<15.5f} "
+                    f"{str(p.get('expert_dim', '-')):<12} "
+                    f"{str(p.get('router_hidden_dim', '-')):<15} {str(p.get('interaction_hidden_dim', '-')):<15} {str(p.get('expert_hidden_dim', '-')):<15} {str(p.get('lr', '-')):<10} {str(p.get('weight_decay', '-')):<12}"
+                )
+        print("-" * header_width)
         print("STATISTICAL CAUTION:")
         print("  - If difference between top trials is smaller than seed std, the performance difference is not statistically meaningful.")
         print("  - Tuning uses 3 seeds ([10, 11, 12]). Final test evaluation will strictly use separate seeds ([1, 2, 3, 4, 5]).")
-    print("=" * 115 + "\n")
+    print("=" * header_width + "\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="tune_cdum.py",
-        description="Optuna Hyperparameter Tuning for CPM + VALOR + Dynamic Fusion on Criteo Uplift",
+        description="Optuna Hyperparameter Tuning for CPM Variants on Criteo Uplift",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    p.add_argument("--model", type=str, default="drfu",
+                   choices=["drfu", "two_branch_dynamic_fusion", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"],
+                   help="Model variant to tune ('drfu' or 'two_branch_dynamic_fusion').")
     p.add_argument("--n-trials", "--n_trials", dest="n_trials", type=int, default=30,
                    help="Number of Optuna trials to run (default: 30).")
     p.add_argument("--seeds", nargs="+", type=int, default=[10, 11, 12],
@@ -613,8 +682,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Device ('cuda', 'cpu', or null for auto-detect).")
     p.add_argument("--num-workers", "--num_workers", dest="num_workers", type=int, default=2,
                    help="Number of DataLoader workers.")
-    p.add_argument("--study-name", "--study_name", dest="study_name", type=str, default="cpm_dynamic_fusion_coarse_3seed",
-                   help="Name of in-memory Optuna study.")
+    p.add_argument("--study-name", "--study_name", dest="study_name", type=str, default=None,
+                   help="Name of in-memory Optuna study (defaults to <model>_optuna_3seed).")
     p.add_argument("--sampler-seed", "--sampler_seed", dest="sampler_seed", type=int, default=42,
                    help="Random seed for Optuna TPESampler.")
     p.add_argument("--startup-trials", "--startup_trials", dest="startup_trials", type=int, default=8,

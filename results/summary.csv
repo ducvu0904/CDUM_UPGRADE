@@ -1,2 +1,0 @@
-model,best_epoch,val_loss,val_auuc,test_auuc,test_qini,test_lift@30,val_loss_mean,val_loss_std,val_auuc_mean,val_auuc_std,test_auuc_mean,test_auuc_std,test_qini_mean,test_qini_std,test_lift@30_mean,test_lift@30_std
-cpm_dynamic_fusion,4.6 ± 1.52,0.01503 ± 0.00002,0.03422 ± 0.00062,0.03609 ± 0.00165,0.09166 ± 0.00413,0.03038 ± 0.00050,0.015032,2.1e-05,0.034217,0.000616,0.036091,0.00165,0.091665,0.004131,0.030384,0.000501

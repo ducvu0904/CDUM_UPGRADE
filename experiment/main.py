@@ -44,6 +44,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+MODEL_ALIASES = {
+    "cpm": "cdum",
+    "cpm_dynamic_fusion": "two_branch_dynamic_fusion",
+    "cpm_three_branch_dynamic_fusion": "drfu",
+}
+
+
+def canonical_model_name(model_name: str) -> str:
+    """Return the canonical model identifier while accepting legacy names."""
+    normalized = model_name.lower()
+    return MODEL_ALIASES.get(normalized, normalized)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Config YAML helpers
 # ══════════════════════════════════════════════════════════════════════════════
@@ -56,6 +68,8 @@ def load_yaml_config(config_path: str) -> dict:
     if str(config_path).endswith(".json"):
         # run_model saves parser destinations verbatim. Do not infer configs
         # from checkpoint paths: callers explicitly select this file.
+        if "interaction_hidden_dim" not in cfg and "valor_hidden_dim" in cfg:
+            cfg["interaction_hidden_dim"] = cfg["valor_hidden_dim"]
         valid_keys = vars(build_parser().parse_args([]))
         return {key: value for key, value in cfg.items() if key in valid_keys}
 
@@ -71,14 +85,15 @@ def load_yaml_config(config_path: str) -> dict:
         "activation": "cpm_activation", "dropout_rate": "cpm_dropout",
         "batch_norm": "cpm_batch_norm", "l2_reg": "cpm_weight_decay",
         "router_hidden_dim": "router_hidden_dim",
-        "valor_hidden_dim": "valor_hidden_dim",
+        "interaction_hidden_dim": "interaction_hidden_dim",
+        "valor_hidden_dim": "interaction_hidden_dim",
         "prognostic_hidden_dim": "prognostic_hidden_dim",
     }
     section_map = {
         "data":               {"path": "data", "train_path": "train_path", "val_path": "val_path",
                                "test_path": "test_path", "label_col": "label_col", "num_workers": "num_workers",
                                "test_size": "test_size", "val_ratio": "val_ratio"},
-        "model":              {"name": "model", "input_dim": "input_dim", "router_hidden_dim": "router_hidden_dim", "valor_hidden_dim": "valor_hidden_dim", "prognostic_hidden_dim": "prognostic_hidden_dim"},
+        "model":              {"name": "model", "input_dim": "input_dim", "router_hidden_dim": "router_hidden_dim", "interaction_hidden_dim": "interaction_hidden_dim", "valor_hidden_dim": "interaction_hidden_dim", "prognostic_hidden_dim": "prognostic_hidden_dim"},
         "training":           {"epochs": "epochs", "batch_size": "batch_size", "lr": "lr",
                                "lr_factor": "lr_factor", "lr_patience": "lr_patience", "min_lr": "min_lr",
                                "weight_decay": "weight_decay", "patience": "patience", "device": "device", "seeds": "seeds",
@@ -87,6 +102,8 @@ def load_yaml_config(config_path: str) -> dict:
         "cdum":               cpm_keys,
         "cpm_dynamic_fusion": cpm_keys,
         "cpm_three_branch_dynamic_fusion": cpm_keys,
+        "two_branch_dynamic_fusion": cpm_keys,
+        "drfu":               cpm_keys,
         "output":             {"checkpoint_dir": "checkpoint_dir", "results_dir": "results_dir",
                                "run_name": "run_name", "eval_k": "eval_k", "verbose": "verbose"},
     }
@@ -166,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── Model ─────────────────────────────────────────────────────────────────
     mdl = p.add_argument_group("Model")
-    mdl.add_argument("--model", type=str, default="cdum", choices=["cdum", "cpm", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"],
+    mdl.add_argument("--model", type=str, default="cdum", choices=["cdum", "cpm", "two_branch_dynamic_fusion", "drfu", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"],
                      help="CPM baseline or dynamic-fusion variant. 'cpm' is retained as an alias for CDUM.")
     mdl.add_argument("--input_dim", type=int, default=12,
                      help="Number of input features (12 for Criteo f0..f11).")
@@ -176,9 +193,12 @@ def build_parser() -> argparse.ArgumentParser:
     cdm.add_argument("--router_hidden_dim", "--cpm_router_hidden_dim", "--cdum_router_hidden_dim",
                      dest="router_hidden_dim", type=int, default=None,
                      help="Router hidden dimension for dynamic-fusion variants (defaults to expert_dim D).")
-    cdm.add_argument("--valor_hidden_dim", "--cpm_valor_hidden_dim", "--cdum_valor_hidden_dim",
-                     dest="valor_hidden_dim", type=int, default=None,
-                     help="VALOR MLP hidden dimension for dynamic-fusion variants (defaults to expert_hidden_dim).")
+    cdm.add_argument(
+        "--interaction_hidden_dim", "--treatment_interaction_hidden_dim",
+        "--valor_hidden_dim", "--cpm_valor_hidden_dim", "--cdum_valor_hidden_dim",
+        dest="interaction_hidden_dim", type=int, default=None,
+        help="Treatment-interaction MLP hidden dimension (defaults to expert_hidden_dim).",
+    )
     cdm.add_argument("--prognostic_hidden_dim", "--cpm_prognostic_hidden_dim", "--cdum_prognostic_hidden_dim",
                      dest="prognostic_hidden_dim", type=int, default=None,
                      help="Prognostic MLP hidden dimension for three-branch fusion (defaults to expert_hidden_dim).")
@@ -257,8 +277,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_model(model_name: str, args: argparse.Namespace):
     """Build the CDUM model and training wrapper."""
-    model_name_lower = model_name.lower()
-    if model_name_lower in ("cdum", "cpm", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"):
+    model_name_lower = canonical_model_name(model_name)
+    if model_name_lower in ("cdum", "two_branch_dynamic_fusion", "drfu"):
         num_features = getattr(args, "cpm_num_features", None) or args.input_dim
         num_bins = getattr(args, "cpm_num_bins", 101)
         embedding_dim = getattr(args, "cpm_embedding_dim", 32)
@@ -292,16 +312,16 @@ def build_model(model_name: str, args: argparse.Namespace):
             use_bn=use_bn,
         )
 
-        if model_name_lower in ("cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"):
-            from CDUM.variants import CPMDynamicFusion, CPMThreeBranchDynamicFusion
-            model_cls = CPMDynamicFusion if model_name_lower == "cpm_dynamic_fusion" else CPMThreeBranchDynamicFusion
+        if model_name_lower in ("two_branch_dynamic_fusion", "drfu"):
+            from CDUM.variants import DRFU, TwoBranchDynamicFusion
+            model_cls = TwoBranchDynamicFusion if model_name_lower == "two_branch_dynamic_fusion" else DRFU
             router_hidden_dim = getattr(args, "router_hidden_dim", None)
             if router_hidden_dim is not None:
                 model_kwargs["router_hidden_dim"] = router_hidden_dim
-            valor_hidden_dim = getattr(args, "valor_hidden_dim", None)
-            if valor_hidden_dim is not None:
-                model_kwargs["valor_hidden_dim"] = valor_hidden_dim
-            if model_name_lower == "cpm_three_branch_dynamic_fusion":
+            interaction_hidden_dim = getattr(args, "interaction_hidden_dim", None)
+            if interaction_hidden_dim is not None:
+                model_kwargs["interaction_hidden_dim"] = interaction_hidden_dim
+            if model_name_lower == "drfu":
                 model_kwargs["prognostic_hidden_dim"] = getattr(args, "prognostic_hidden_dim", None)
         else:
             model_cls = CPM
@@ -321,7 +341,7 @@ def build_model(model_name: str, args: argparse.Namespace):
             trainer.criterion = nn.HuberLoss(delta=huber_delta)
         return trainer
 
-    raise ValueError(f"Unsupported model '{model_name}'. Supported models: 'cdum', 'cpm', 'cpm_dynamic_fusion', 'cpm_three_branch_dynamic_fusion'.")
+    raise ValueError(f"Unsupported model '{model_name}'. Supported models: 'cdum', 'cpm', 'two_branch_dynamic_fusion', and 'drfu'.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -441,7 +461,7 @@ def prepare_loaders_for_model(
     test_loader,
 ):
     """Nếu model là CDUM / CPM và features là continuous float, bọc DataLoaders bằng EquidistantBucketer."""
-    if model_name.lower() in ("cdum", "cpm", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion") and not isinstance(train_loader, BucketedDataLoader):
+    if canonical_model_name(model_name) in ("cdum", "two_branch_dynamic_fusion", "drfu") and not isinstance(train_loader, BucketedDataLoader):
         num_bins = getattr(args, "cpm_num_bins", 101)
         bucketer = EquidistantBucketer(num_bins=num_bins)
 
@@ -655,7 +675,6 @@ def run_single_seed(
         "train_time_s": round(elapsed, 2),
         "comparison": comparison_info,
     }
-
     logger.info(
         f"Seed {seed} Done | Best Epoch: {best_epoch} | Val Loss: {best_val_loss:.5f} | Val AUUC: {best_val_auuc:.5f} "
         f"| Test AUUC: {auuc_val:.5f} | Test Qini: {qini_val:.5f} | Test Lift@30: {lift_val:.5f} "
@@ -811,7 +830,7 @@ def main():
         args.seeds = list(args.seeds)
 
     raw_model = getattr(args, "model", "cdum").lower()
-    model_name = "cdum" if raw_model in ("cdum", "cpm") else raw_model
+    model_name = canonical_model_name(raw_model)
     args.model = model_name
 
     # ── Nạp dữ liệu pre-split và tạo DataLoaders ──────────────────────────────

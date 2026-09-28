@@ -16,7 +16,7 @@ class FeatureEncoder(nn.Module):
         self.num_bins = num_bins
         self.embedding_dim = embedding_dim
         
-        self.treatment_dim = treatment_dim if treatment_dim is not None else (embedding_dim * 4)
+        self.treatment_dim = treatment_dim if treatment_dim is not None else (embedding_dim)
 
         self.feature_embeddings = nn.ModuleList(
             [nn.Embedding(num_bins, embedding_dim) for _ in range(num_features)]
@@ -25,7 +25,7 @@ class FeatureEncoder(nn.Module):
 
     def encode_treatment(self, t: torch.Tensor):
         t = t.long()
-        t_emb = self.treatment_embeddings(t)  # [B, 128]
+        t_emb = self.treatment_embeddings(t)
         return t_emb
 
     def encode_features(self, x: torch.Tensor):

@@ -30,6 +30,7 @@ from preprocess.data_loader import get_dataloaders
 from experiment.main import (
     build_parser,
     build_model,
+    canonical_model_name,
     merge_config_into_args,
     prepare_loaders_for_model,
     update_summary_csv,
@@ -50,12 +51,15 @@ def parse_args():
     )
     parser.add_argument("--config", type=str, default="experiment/config.yaml",
                         help="Path to YAML config or the training run's saved config.json.")
-    parser.add_argument("--model", type=str, default=None, choices=["cdum", "cpm", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"],
+    parser.add_argument("--model", type=str, default=None, choices=["cdum", "cpm", "drfu", "two_branch_dynamic_fusion", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"],
                         help="Model to evaluate. Defaults to the explicitly supplied config's model.")
     parser.add_argument("--router_hidden_dim", type=int, default=None,
                         help="Router hidden dimension for dynamic-fusion variants (default: from config or model default).")
-    parser.add_argument("--valor_hidden_dim", type=int, default=None,
-                        help="VALOR hidden dimension for dynamic-fusion variants (default: from config or model default).")
+    parser.add_argument(
+        "--interaction_hidden_dim", "--valor_hidden_dim",
+        dest="interaction_hidden_dim", type=int, default=None,
+        help="Treatment-interaction hidden dimension (default: config or model default).",
+    )
     parser.add_argument("--prognostic_hidden_dim", type=int, default=None,
                         help="Three-branch prognostic hidden dimension (default: from config or expert_hidden_dim).")
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -85,7 +89,14 @@ def parse_args():
 
 
 def resolve_checkpoint_path(results_dir: str, model_name: str, seed: int, ckpt_type: str) -> str:
-    seed_dir = os.path.join(results_dir, model_name.lower(), f"seed_{seed}")
+    canonical = canonical_model_name(model_name)
+    legacy_names = {
+        "drfu": "cpm_three_branch_dynamic_fusion",
+        "two_branch_dynamic_fusion": "cpm_dynamic_fusion",
+    }
+    model_dirs = [canonical]
+    if canonical in legacy_names:
+        model_dirs.append(legacy_names[canonical])
     type_map = {
         "best_auuc": [
             "best_auuc_checkpoint.pth",
@@ -120,12 +131,21 @@ def resolve_checkpoint_path(results_dir: str, model_name: str, seed: int, ckpt_t
         ckpt_type,
         [f"{ckpt_type}_checkpoint.pth", f"{ckpt_type}.pth", f"{ckpt_type}_checkpoint.pt", f"{ckpt_type}.pt"]
     )
-    for name in candidates:
-        p = os.path.join(seed_dir, name)
-        if os.path.exists(p):
-            return p
+    checked = []
+    for directory_name in model_dirs:
+        seed_dir = os.path.join(results_dir, directory_name, f"seed_{seed}")
+        directory_candidates = list(candidates)
+        if directory_name != model_name.lower():
+            directory_candidates.extend(
+                name.replace(model_name.lower(), directory_name) for name in candidates
+            )
+        for name in dict.fromkeys(directory_candidates):
+            p = os.path.join(seed_dir, name)
+            checked.append(p)
+            if os.path.exists(p):
+                return p
     raise FileNotFoundError(
-        f"No checkpoint found for {model_name} seed {seed} in {seed_dir}. Checked: {candidates}"
+        f"No checkpoint found for {model_name} seed {seed}. Checked: {checked}"
     )
 
 
@@ -148,7 +168,7 @@ def evaluate_single_checkpoint(
     trainer.load(ckpt_path)
 
     eval_kwargs: Dict[str, Any] = {"k": args.eval_k}
-    if model_name.lower() in ("cdum", "cpm", "cpm_dynamic_fusion", "cpm_three_branch_dynamic_fusion"):
+    if canonical_model_name(model_name) in ("cdum", "two_branch_dynamic_fusion", "drfu"):
         eval_kwargs["print_diagnostics"] = True
 
     try:
@@ -190,13 +210,13 @@ def main():
         args.model = cli_args.model
     if cli_args.router_hidden_dim is not None:
         args.router_hidden_dim = cli_args.router_hidden_dim
-    if cli_args.valor_hidden_dim is not None:
-        args.valor_hidden_dim = cli_args.valor_hidden_dim
+    if cli_args.interaction_hidden_dim is not None:
+        args.interaction_hidden_dim = cli_args.interaction_hidden_dim
     if cli_args.prognostic_hidden_dim is not None:
         args.prognostic_hidden_dim = cli_args.prognostic_hidden_dim
 
     raw_model = (getattr(args, "model", None) or "cdum").lower()
-    model_name = "cdum" if raw_model in ("cdum", "cpm") else raw_model
+    model_name = canonical_model_name(raw_model)
     args.model = model_name
 
     # Determine seeds to evaluate
